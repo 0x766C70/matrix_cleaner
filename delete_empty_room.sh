@@ -198,7 +198,8 @@ function parse_room_data {
             if (local_users !~ /^[0-9]+$/) next;
 
             # Only print rooms with joined_members <= MIN_JOINED_MEMBERS
-            if (joined <= '"${MIN_JOINED_MEMBERS}"' && room_id != "" && room_id !~ /^[#-]/) {
+            # Exclude rooms starting with # (comments) or - (dividers)
+            if (joined <= '"${MIN_JOINED_MEMBERS}"' && room_id != "" && room_id !~ /^[#]/ && room_id !~ /^[-]/) {
                 print room_id "|" joined "|" name "|" local_users;
             }
         }
@@ -479,9 +480,11 @@ function main {
     echo "Threshold: Rooms with ≤ ${MIN_JOINED_MEMBERS} joined members"
     echo "${DIVIDER_LINE}"
     echo
+    
+    # Process rooms with the parsed arguments
+    process_rooms "${dry_run}" "${manual_mode}"
 }
 
 # ------------------------- Script Execution -------------------------
 main "$@"
-process_rooms "${DRY_RUN_FLAG}" "${MANUAL_MODE}"
 
