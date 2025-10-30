@@ -199,7 +199,7 @@ function parse_room_data {
 
             # Only print rooms with joined_members <= MIN_JOINED_MEMBERS
             # Exclude rooms starting with # (comments) or - (dividers)
-            if (joined <= '"${MIN_JOINED_MEMBERS}"' && room_id != "" && room_id !~ /^[#]/ && room_id !~ /^[-]/) {
+            if (joined <= '"${MIN_JOINED_MEMBERS}"' && room_id != "" && room_id !~ /^#/ && room_id !~ /^-/) {
                 print room_id "|" joined "|" name "|" local_users;
             }
         }
