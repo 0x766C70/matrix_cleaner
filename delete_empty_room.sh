@@ -24,6 +24,7 @@ readonly SYNADM_CMD="synadm"              # Command to interact with Synapse adm
 readonly AUTO_CONFIRM="y"                 # Automatic confirmation response
 readonly MANUAL_MODE=false               # Default manual mode (changed by args)
 readonly DRY_RUN_FLAG=false              # Default dry-run mode (changed by args)
+readonly FORCE_REGENERATE=false          # Default force regenerate (changed by args)
 readonly DIVIDER_LINE="--------------------------------------------------"
 # -----------------------------------------------------------------------------
 
@@ -50,6 +51,7 @@ Usage: $(basename "$0") [OPTIONS]
 Options:
   -d, --dry-run    Show what would be done without making changes
   -m, --manual     Manual mode - show room details and prompt before deleting
+  -f, --force      Force regeneration of the input file from database
   -h, --help       Show this help message and exit
 
 Input File Format:
@@ -65,6 +67,14 @@ Examples:
 
   # Manual mode - show details and prompt before each deletion
   $(basename "$0") --manual
+  
+  # Force regeneration of input file
+  $(basename "$0") --force
+
+Notes:
+  - The input file is automatically generated from the Synapse database
+  - Existing input files will be reused unless --force is specified
+  - Requires PostgreSQL access and synadm to be installed and configured
 EOF
 }
 
@@ -72,17 +82,47 @@ EOF
 # -----------------------------------------------------------------------------
 # function: create_input_file
 #
-# Creates a sample input file if it does not exist.
+# Creates the input file by querying the Synapse database for room statistics.
 #
+# Input: 
+#   $1 - Force flag (true/false) - whether to regenerate even if file exists
+# Output: Creates INPUT_FILE with room statistics
+#         Prints status messages to stdout
+#         Exits with error code 1 if creation fails
+# Called by: main
 # -----------------------------------------------------------------------------
 
 function create_input_file {
-    su postgres -c 'psql --dbname=synapse --command="SELECT
+    local force="$1"
+    
+    # Check if file exists and we're not forcing regeneration
+    if [[ -f "${INPUT_FILE}" && "${force}" != true ]]; then
+        echo "Using existing input file: ${INPUT_FILE}"
+        echo "(Use --force to regenerate from database)"
+        return 0
+    fi
+    
+    echo "Generating input file from database..."
+    
+    # Execute the SQL query and save to INPUT_FILE
+    if ! su postgres -c 'psql --dbname=synapse --command="SELECT
         room_stats_current.room_id, room_stats_state.name,
         room_stats_current.local_users_in_room, room_stats_current.joined_members
 FROM room_stats_current
         LEFT JOIN room_stats_state ON room_stats_current.room_id = room_stats_state.room_id
-ORDER BY joined_members DESC, local_users_in_room DESC;"' > ./empty.list
+ORDER BY joined_members DESC, local_users_in_room DESC;"' > "${INPUT_FILE}" 2>&1; then
+        echo "ERROR: Failed to generate input file from database." >&2
+        echo "       Make sure PostgreSQL is running and you have the necessary permissions." >&2
+        exit 1
+    fi
+    
+    # Validate that we got some data
+    if [[ ! -s "${INPUT_FILE}" ]]; then
+        echo "ERROR: Generated input file is empty." >&2
+        exit 1
+    fi
+    
+    echo "Successfully generated input file: ${INPUT_FILE}"
 }
 
 # -----------------------------------------------------------------------------
@@ -125,12 +165,13 @@ function check_synadm_available {
 # -----------------------------------------------------------------------------
 # function: parse_room_data
 #
-# Parses the input file and extracts room data.
+# Parses the input file and extracts room data with validation.
 #
 # Input:
 #   $1 - Input file path
 # Output:
 #   Prints room data in format: room_id|joined_members|name|local_users
+#   Only prints rooms meeting the criteria
 # Called by: process_rooms
 # -----------------------------------------------------------------------------
 function parse_room_data {
@@ -152,8 +193,13 @@ function parse_room_data {
             joined = $4;
             gsub(/^[ \t]+|[ \t]+$/, "", joined);
 
+            # Validate that joined and local_users are numeric
+            if (joined !~ /^[0-9]+$/) next;
+            if (local_users !~ /^[0-9]+$/) next;
+
             # Only print rooms with joined_members <= MIN_JOINED_MEMBERS
-            if (joined <= '"${MIN_JOINED_MEMBERS}"' && room_id != "" && room_id !~ /^#/) {
+            # Exclude rooms starting with # (comments) or - (dividers)
+            if (joined <= '"${MIN_JOINED_MEMBERS}"' && room_id != "" && room_id !~ /^#/ && room_id !~ /^-/) {
                 print room_id "|" joined "|" name "|" local_users;
             }
         }
@@ -180,7 +226,8 @@ function display_room_details {
     local local_users="$4"
 
     # Clean room_id (remove any leading/trailing whitespace or ! if present)
-    local clean_room_id=$(echo "${room_id}" | sed 's/^[! \t]*//;s/[ \t]*$//')
+    local clean_room_id
+    clean_room_id=$(echo "${room_id}" | sed 's/^[! \t]*//;s/[ \t]*$//')
 
     echo "Room Details:"
     echo "${DIVIDER_LINE}"
@@ -243,7 +290,8 @@ function process_room_deletion_auto {
     local dry_run="$5"
 
     # Clean room_id (remove any leading/trailing whitespace or ! if present)
-    local clean_room_id=$(echo "${room_id}" | sed 's/^[# \t]*//;s/[ \t]*$//')
+    local clean_room_id
+    clean_room_id=$(echo "${room_id}" | sed 's/^[# \t]*//;s/[ \t]*$//')
 
     if [[ "${dry_run}" == true ]]; then
         echo "[DRY RUN] Would delete room: ${clean_room_id}"
@@ -288,7 +336,8 @@ function process_room_deletion_manual {
     local dry_run="$5"
 
     # Clean room_id (remove any leading/trailing whitespace or ! if present)
-    local clean_room_id=$(echo "${room_id}" | sed 's/^[! \t]*//;s/[ \t]*$//')
+    local clean_room_id
+    clean_room_id=$(echo "${room_id}" | sed 's/^[! \t]*//;s/[ \t]*$//')
 
     # Display detailed room information
     display_room_details "${clean_room_id}" "${joined_members}" "${room_name}" "${local_users}"
@@ -304,16 +353,18 @@ function process_room_deletion_manual {
 
         if printf '%s\n' "${AUTO_CONFIRM}" | "${SYNADM_CMD}" room delete "${clean_room_id}" >/dev/null 2>&1; then
             echo "Successfully deleted room: ${clean_room_id}"
+            echo
             return 0
         else
             echo "ERROR: Failed to delete room: ${clean_room_id}" >&2
+            echo
             return 1
         fi
     else
         echo "Skipping this room."
+        echo
         return 1
     fi
-    echo
 }
 
 # -----------------------------------------------------------------------------
@@ -382,6 +433,7 @@ function process_rooms {
 function main {
     local dry_run="${DRY_RUN_FLAG}"
     local manual_mode="${MANUAL_MODE}"
+    local force_regenerate="${FORCE_REGENERATE}"
 
     # Parse command line arguments
     while [[ $# -gt 0 ]]; do
@@ -392,6 +444,10 @@ function main {
                 ;;
             -m|--manual)
                 manual_mode=true
+                shift
+                ;;
+            -f|--force)
+                force_regenerate=true
                 shift
                 ;;
             -h|--help)
@@ -407,9 +463,9 @@ function main {
     done
 
     # Validate prerequisites
-    validate_input_file
     check_synadm_available
-    create_input_file
+    create_input_file "${force_regenerate}"
+    validate_input_file
 
     # Show mode status
     echo "Matrix Room Cleanup Script"
@@ -424,9 +480,11 @@ function main {
     echo "Threshold: Rooms with ≤ ${MIN_JOINED_MEMBERS} joined members"
     echo "${DIVIDER_LINE}"
     echo
+    
+    # Process rooms with the parsed arguments
+    process_rooms "${dry_run}" "${manual_mode}"
 }
 
 # ------------------------- Script Execution -------------------------
 main "$@"
-process_rooms "${DRY_RUN_FLAG}" "${MANUAL_MODE}"
 
