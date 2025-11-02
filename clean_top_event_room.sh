@@ -37,11 +37,17 @@ readonly EXCLUDE_DOMAIN="fdn.fr"
 # Function: log
 # Description: Logs messages with timestamp and script name to log file
 # Input: $* - Message to log
-# Output: Appends timestamped message to LOG_FILE
+# Output: Appends timestamped message to LOG_FILE (if writable)
 # Called by: Various functions for logging critical actions and errors
 ################################################################################
 function log {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - ${SCRIPT_NAME} - $*" >> "$LOG_FILE"
+    # Sanitize input by removing newlines to prevent log injection
+    local message="${*//[$'\n\r']/}"
+    
+    # Silently attempt to write to log file; no error if permissions denied
+    {
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - ${SCRIPT_NAME} - ${message}" >> "$LOG_FILE"
+    } 2>/dev/null || true
 }
 
 ################################################################################
