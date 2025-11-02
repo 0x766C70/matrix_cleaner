@@ -18,6 +18,12 @@
 # Global Variables
 ######################################
 
+# Script name for logging
+readonly SCRIPT_NAME="$(basename "$0")"
+
+# Log file for critical actions and errors
+readonly LOG_FILE="/var/log/${SCRIPT_NAME}.log"
+
 # File containing room information (room_id and count)
 readonly ROOM_LIST_FILE="room.list"
 
@@ -26,6 +32,23 @@ readonly DAYS_TO_KEEP=30
 
 # Domain to exclude from processing
 readonly EXCLUDE_DOMAIN="fdn.fr"
+
+################################################################################
+# Function: log
+# Description: Logs messages with timestamp and script name to log file
+# Input: $* - Message to log
+# Output: Appends timestamped message to LOG_FILE (if writable)
+# Called by: Various functions for logging critical actions and errors
+################################################################################
+function log {
+    # Sanitize input by removing newlines to prevent log injection
+    local message="${*//[$'\n\r']/}"
+    
+    # Silently attempt to write to log file; no error if permissions denied
+    {
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - ${SCRIPT_NAME} - ${message}" >> "$LOG_FILE"
+    } 2>/dev/null || true
+}
 
 ################################################################################
 # Function: display_usage
@@ -100,11 +123,14 @@ function should_process_room {
 function purge_room_history {
     local room_id="$1"
 
+    log "Purging history for room ${room_id} (keeping last ${DAYS_TO_KEEP} days)"
     # Use yes to automatically answer "Y" to any prompts
     # Redirect stderr to stdout to capture all output
     if yes | synadm history purge "$room_id" -d "${DAYS_TO_KEEP}" 2>&1; then
+        log "Successfully purged history for room ${room_id}"
         return 0
     else
+        log "ERROR: Failed to purge history for room ${room_id}"
         return 1
     fi
 }
@@ -122,12 +148,14 @@ function generate_room_list {
     temp_file=$(mktemp)
 
     echo "Generating room list from database..."
+    log "Starting room list generation from database"
 
     # Execute the SQL query and capture output
     if ! sudo -u postgres bash -c \
         'psql --dbname=synapse --command="SELECT room_id, count(*) AS count FROM state_groups_state GROUP BY room_id ORDER BY count DESC LIMIT 1000;"' \
         > "$temp_file" 2>&1; then
         echo "Error: Failed to generate room list from database" >&2
+        log "ERROR: Failed to generate room list from database"
         echo "PostgreSQL output:" >&2
         cat "$temp_file" >&2
         rm -f "$temp_file"
@@ -137,6 +165,7 @@ function generate_room_list {
     # Check if we got valid output (at least a header line and some data)
     if ! grep -q "room_id.*|.*count" "$temp_file" || ! grep -q "!.*|" "$temp_file"; then
         echo "Error: Unexpected output format from database query" >&2
+        log "ERROR: Unexpected output format from database query"
         echo "Output was:" >&2
         cat "$temp_file" >&2
         rm -f "$temp_file"
@@ -146,11 +175,13 @@ function generate_room_list {
     # Move the temp file to our target location
     if ! mv "$temp_file" "${ROOM_LIST_FILE}"; then
         echo "Error: Failed to save room list to ${ROOM_LIST_FILE}" >&2
+        log "ERROR: Failed to save room list to ${ROOM_LIST_FILE}"
         rm -f "$temp_file"
         return 1
     fi
 
     echo "Successfully generated room list with top 1000 rooms by message count"
+    log "Successfully generated room list with top 1000 rooms by message count"
     return 0
 }
 
@@ -170,10 +201,12 @@ function process_room_list {
     # Check if file exists and is readable
     if [[ ! -f "${ROOM_LIST_FILE}" || ! -r "${ROOM_LIST_FILE}" ]]; then
         echo "Error: Cannot read file ${ROOM_LIST_FILE}" >&2
+        log "ERROR: Cannot read file ${ROOM_LIST_FILE}"
         return 1
     fi
 
     echo "Starting room history purge process..."
+    log "Starting room history purge process"
     echo "----------------------------------------"
 
     # Process each line in the file
@@ -192,6 +225,7 @@ function process_room_list {
         # Validate room_id
         if ! is_valid_room_id "$room_id"; then
             echo "Line ${line_number}: Invalid room ID format: '${room_id}' - skipping" >&2
+            log "WARNING: Line ${line_number} - Invalid room ID format: '${room_id}' - skipping"
             ((rooms_skipped++))
             continue
         fi
@@ -199,6 +233,7 @@ function process_room_list {
         # Check if we should process this room
         if ! should_process_room "$room_id"; then
             echo "Line ${line_number}: Skipping room ${room_id} (matches exclusion rules)"
+            log "INFO: Skipping room ${room_id} (matches exclusion rules)"
             ((rooms_skipped++))
             continue
         fi
@@ -219,6 +254,8 @@ function process_room_list {
     echo "Rooms processed successfully: ${rooms_processed}"
     echo "Rooms skipped: ${rooms_skipped}"
     echo "Rooms failed: ${rooms_failed}"
+    
+    log "Processing complete - Processed: ${rooms_processed}, Skipped: ${rooms_skipped}, Failed: ${rooms_failed}"
 
     if [[ ${rooms_failed} -gt 0 ]]; then
         return 1
@@ -235,6 +272,8 @@ function process_room_list {
 # Called by: Script execution starts here
 ################################################################################
 function main {
+    log "Script started"
+    
     # Process command line arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -244,6 +283,7 @@ function main {
                 ;;
             *)
                 echo "Error: Unknown option '$1'" >&2
+                log "ERROR: Unknown option '$1'"
                 display_usage
                 exit 1
                 ;;
@@ -253,15 +293,21 @@ function main {
 
     # Generate the room list first
     if ! generate_room_list; then
+        log "ERROR: Failed to generate room list, exiting"
         exit 1
     fi
 
     # Then process it
     if ! process_room_list; then
         echo "Completed with errors. See above for details." >&2
+        log "ERROR: Completed with errors"
         exit 1
     fi
 
     echo "Completed successfully."
+    log "Script completed successfully"
     exit 0
 }
+
+# Call main function with all script arguments
+main "$@"
