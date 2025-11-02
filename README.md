@@ -106,6 +106,9 @@ Identifies and deletes Matrix rooms with 0 or 1 joined members, helping to clean
 
 # Manual mode - review each room and confirm before deletion
 ./delete_empty_room.sh --manual
+
+# Set custom threshold for empty rooms (e.g., rooms with 2 or fewer members)
+./delete_empty_room.sh --threshold 2
 ```
 
 #### Operating Modes
@@ -116,10 +119,12 @@ Identifies and deletes Matrix rooms with 0 or 1 joined members, helping to clean
 
 #### Configuration
 
-You can modify these variables at the top of the script:
+You can modify these settings via command-line arguments:
 
-- `MIN_JOINED_MEMBERS`: Threshold for empty rooms (default: 1)
-- `INPUT_FILE`: File containing room data (default: "empty.list")
+- `--threshold <number>`: Set the minimum joined members threshold (default: 1)
+- `--force`: Force regeneration of the input file from the database
+
+The default threshold is 1, meaning rooms with 0 or 1 joined members are considered empty.
 
 #### How It Works
 

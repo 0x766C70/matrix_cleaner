@@ -19,7 +19,7 @@
 
 # ------------------------- Global Variables -------------------------
 readonly INPUT_FILE="empty.list"          # Input file containing room data
-readonly MIN_JOINED_MEMBERS=1            # Threshold for considering a room empty
+readonly DEFAULT_MIN_JOINED_MEMBERS=1    # Default threshold for considering a room empty
 readonly SYNADM_CMD="synadm"              # Command to interact with Synapse admin
 readonly AUTO_CONFIRM="y"                 # Automatic confirmation response
 readonly MANUAL_MODE=false               # Default manual mode (changed by args)
@@ -49,10 +49,11 @@ joined members. It supports three operating modes.
 Usage: $(basename "$0") [OPTIONS]
 
 Options:
-  -d, --dry-run    Show what would be done without making changes
-  -m, --manual     Manual mode - show room details and prompt before deleting
-  -f, --force      Force regeneration of the input file from database
-  -h, --help       Show this help message and exit
+  -d, --dry-run              Show what would be done without making changes
+  -m, --manual               Manual mode - show room details and prompt before deleting
+  -f, --force                Force regeneration of the input file from database
+  -t, --threshold <number>   Set minimum joined members threshold (default: ${DEFAULT_MIN_JOINED_MEMBERS})
+  -h, --help                 Show this help message and exit
 
 Input File Format:
   The script expects an ASCII table in ${INPUT_FILE} with columns:
@@ -70,6 +71,9 @@ Examples:
   
   # Force regeneration of input file
   $(basename "$0") --force
+
+  # Set custom threshold for empty rooms (e.g., rooms with 2 or fewer members)
+  $(basename "$0") --threshold 2
 
 Notes:
   - The input file is automatically generated from the Synapse database
@@ -169,6 +173,7 @@ function check_synadm_available {
 #
 # Input:
 #   $1 - Input file path
+#   $2 - Minimum joined members threshold
 # Output:
 #   Prints room data in format: room_id|joined_members|name|local_users
 #   Only prints rooms meeting the criteria
@@ -176,9 +181,10 @@ function check_synadm_available {
 # -----------------------------------------------------------------------------
 function parse_room_data {
     local input_file="$1"
+    local min_joined_members="$2"
 
     # Skip header and empty lines, extract relevant columns
-    awk -F'|' '
+    awk -F'|' -v threshold="${min_joined_members}" '
         NR > 3 && NF >= 4 {
             # Clean up fields (trim whitespace)
             room_id = $1;
@@ -197,9 +203,9 @@ function parse_room_data {
             if (joined !~ /^[0-9]+$/) next;
             if (local_users !~ /^[0-9]+$/) next;
 
-            # Only print rooms with joined_members <= MIN_JOINED_MEMBERS
+            # Only print rooms with joined_members <= threshold
             # Exclude rooms starting with # (comments) or - (dividers)
-            if (joined <= '"${MIN_JOINED_MEMBERS}"' && room_id != "" && room_id !~ /^#/ && room_id !~ /^-/) {
+            if (joined <= threshold && room_id != "" && room_id !~ /^#/ && room_id !~ /^-/) {
                 print room_id "|" joined "|" name "|" local_users;
             }
         }
@@ -375,24 +381,26 @@ function process_room_deletion_manual {
 # Input:
 #   $1 - Dry run flag (true/false)
 #   $2 - Manual mode flag (true/false)
+#   $3 - Minimum joined members threshold
 # Output: None
 # Called by: main
 # -----------------------------------------------------------------------------
 function process_rooms {
     local dry_run="$1"
     local manual_mode="$2"
+    local min_joined_members="$3"
     local rooms_to_process
     local room_count=0
     local deleted_count=0
 
     # Get rooms that meet our criteria
-    rooms_to_process=$(parse_room_data "${INPUT_FILE}")
+    rooms_to_process=$(parse_room_data "${INPUT_FILE}" "${min_joined_members}")
     if [[ -z "${rooms_to_process}" ]]; then
-        echo "No rooms found with ${MIN_JOINED_MEMBERS} or fewer joined members."
+        echo "No rooms found with ${min_joined_members} or fewer joined members."
         return 0
     fi
 
-    echo "Found the following rooms with ${MIN_JOINED_MEMBERS} or fewer joined members:"
+    echo "Found the following rooms with ${min_joined_members} or fewer joined members:"
     echo
 
     # Process each room
@@ -434,6 +442,7 @@ function main {
     local dry_run="${DRY_RUN_FLAG}"
     local manual_mode="${MANUAL_MODE}"
     local force_regenerate="${FORCE_REGENERATE}"
+    local min_joined_members="${DEFAULT_MIN_JOINED_MEMBERS}"
 
     # Parse command line arguments
     while [[ $# -gt 0 ]]; do
@@ -449,6 +458,20 @@ function main {
             -f|--force)
                 force_regenerate=true
                 shift
+                ;;
+            -t|--threshold)
+                if [[ -z "$2" || "$2" =~ ^- ]]; then
+                    echo "ERROR: --threshold requires a numeric argument" >&2
+                    usage
+                    exit 1
+                fi
+                if [[ ! "$2" =~ ^[0-9]+$ ]]; then
+                    echo "ERROR: --threshold must be a non-negative integer" >&2
+                    usage
+                    exit 1
+                fi
+                min_joined_members="$2"
+                shift 2
                 ;;
             -h|--help)
                 usage
@@ -477,12 +500,12 @@ function main {
     else
         echo "Mode: AUTOMATIC (all qualifying rooms will be deleted)"
     fi
-    echo "Threshold: Rooms with ≤ ${MIN_JOINED_MEMBERS} joined members"
+    echo "Threshold: Rooms with ≤ ${min_joined_members} joined members"
     echo "${DIVIDER_LINE}"
     echo
     
     # Process rooms with the parsed arguments
-    process_rooms "${dry_run}" "${manual_mode}"
+    process_rooms "${dry_run}" "${manual_mode}" "${min_joined_members}"
 }
 
 # ------------------------- Script Execution -------------------------
