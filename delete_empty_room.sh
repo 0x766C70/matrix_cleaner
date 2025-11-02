@@ -18,6 +18,13 @@
 # -----------------------------------------------------------------------------
 
 # ------------------------- Global Variables -------------------------
+
+# Script name for logging
+readonly SCRIPT_NAME="$(basename "$0")"
+
+# Log file for critical actions and errors
+readonly LOG_FILE="/var/log/${SCRIPT_NAME}.log"
+
 readonly INPUT_FILE="empty.list"          # Input file containing room data
 readonly DEFAULT_MIN_JOINED_MEMBERS=1    # Default threshold for considering a room empty
 readonly SYNADM_CMD="synadm"              # Command to interact with Synapse admin
@@ -29,6 +36,19 @@ readonly DIVIDER_LINE="--------------------------------------------------"
 # -----------------------------------------------------------------------------
 
 # ------------------------- Function Definitions -------------------------
+
+# -----------------------------------------------------------------------------
+# function: log
+#
+# Logs messages with timestamp and script name to log file.
+#
+# Input: $* - Message to log
+# Output: Appends timestamped message to LOG_FILE
+# Called by: Various functions for logging critical actions and errors
+# -----------------------------------------------------------------------------
+function log {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - ${SCRIPT_NAME} - $*" >> "$LOG_FILE"
+}
 
 # -----------------------------------------------------------------------------
 # function: usage
@@ -103,10 +123,12 @@ function create_input_file {
     if [[ -f "${INPUT_FILE}" && "${force}" != true ]]; then
         echo "Using existing input file: ${INPUT_FILE}"
         echo "(Use --force to regenerate from database)"
+        log "Using existing input file: ${INPUT_FILE}"
         return 0
     fi
     
     echo "Generating input file from database..."
+    log "Starting input file generation from database"
     
     # Execute the SQL query and save to INPUT_FILE
     if ! su postgres -c 'psql --dbname=synapse --command="SELECT
@@ -116,6 +138,7 @@ FROM room_stats_current
         LEFT JOIN room_stats_state ON room_stats_current.room_id = room_stats_state.room_id
 ORDER BY joined_members DESC, local_users_in_room DESC;"' > "${INPUT_FILE}" 2>&1; then
         echo "ERROR: Failed to generate input file from database." >&2
+        log "ERROR: Failed to generate input file from database"
         echo "       Make sure PostgreSQL is running and you have the necessary permissions." >&2
         exit 1
     fi
@@ -123,10 +146,12 @@ ORDER BY joined_members DESC, local_users_in_room DESC;"' > "${INPUT_FILE}" 2>&1
     # Validate that we got some data
     if [[ ! -s "${INPUT_FILE}" ]]; then
         echo "ERROR: Generated input file is empty." >&2
+        log "ERROR: Generated input file is empty"
         exit 1
     fi
     
     echo "Successfully generated input file: ${INPUT_FILE}"
+    log "Successfully generated input file: ${INPUT_FILE}"
 }
 
 # -----------------------------------------------------------------------------
@@ -141,11 +166,13 @@ ORDER BY joined_members DESC, local_users_in_room DESC;"' > "${INPUT_FILE}" 2>&1
 function validate_input_file {
     if [[ ! -f "${INPUT_FILE}" ]]; then
         echo "ERROR: Input file '${INPUT_FILE}' not found." >&2
+        log "ERROR: Input file '${INPUT_FILE}' not found"
         exit 1
     fi
 
     if [[ ! -r "${INPUT_FILE}" ]]; then
         echo "ERROR: Cannot read input file '${INPUT_FILE}'." >&2
+        log "ERROR: Cannot read input file '${INPUT_FILE}'"
         exit 1
     fi
 }
@@ -162,6 +189,7 @@ function validate_input_file {
 function check_synadm_available {
     if ! command -v "${SYNADM_CMD}" >/dev/null 2>&1; then
         echo "ERROR: '${SYNADM_CMD}' command not found. Please install synadm." >&2
+        log "ERROR: '${SYNADM_CMD}' command not found"
         exit 1
     fi
 }
@@ -304,16 +332,20 @@ function process_room_deletion_auto {
         echo "         Name: ${room_name}"
         echo "         Local Users: ${local_users}"
         echo "         Joined Members: ${joined_members}"
+        log "[DRY RUN] Would delete room: ${clean_room_id} (Name: ${room_name}, Joined: ${joined_members})"
         echo
     else
         echo "Deleting room: ${clean_room_id}"
         echo "Name: ${room_name}"
+        log "Deleting room: ${clean_room_id} (Name: ${room_name}, Joined: ${joined_members})"
 
         # Use printf to send the confirmation (more reliable than echo for some shells)
         if printf '%s\n' "${AUTO_CONFIRM}" | "${SYNADM_CMD}" room delete "${clean_room_id}" >/dev/null 2>&1; then
             echo "Successfully deleted room: ${clean_room_id}"
+            log "Successfully deleted room: ${clean_room_id}"
         else
             echo "ERROR: Failed to delete room: ${clean_room_id}" >&2
+            log "ERROR: Failed to delete room: ${clean_room_id}"
         fi
         echo
     fi
@@ -350,24 +382,29 @@ function process_room_deletion_manual {
 
     if [[ "${dry_run}" == true ]]; then
         echo "[DRY RUN] Would delete this room"
+        log "[DRY RUN] Would delete room: ${clean_room_id} (Name: ${room_name}, Joined: ${joined_members})"
         echo
         return 0
     fi
 
     if get_user_confirmation "Delete this room" "n"; then
         echo "Deleting room..."
+        log "User confirmed deletion of room: ${clean_room_id}"
 
         if printf '%s\n' "${AUTO_CONFIRM}" | "${SYNADM_CMD}" room delete "${clean_room_id}" >/dev/null 2>&1; then
             echo "Successfully deleted room: ${clean_room_id}"
+            log "Successfully deleted room: ${clean_room_id}"
             echo
             return 0
         else
             echo "ERROR: Failed to delete room: ${clean_room_id}" >&2
+            log "ERROR: Failed to delete room: ${clean_room_id}"
             echo
             return 1
         fi
     else
         echo "Skipping this room."
+        log "User skipped deletion of room: ${clean_room_id}"
         echo
         return 1
     fi
@@ -393,10 +430,13 @@ function process_rooms {
     local room_count=0
     local deleted_count=0
 
+    log "Starting room processing (threshold: ${min_joined_members}, dry_run: ${dry_run}, manual: ${manual_mode})"
+
     # Get rooms that meet our criteria
     rooms_to_process=$(parse_room_data "${INPUT_FILE}" "${min_joined_members}")
     if [[ -z "${rooms_to_process}" ]]; then
         echo "No rooms found with ${min_joined_members} or fewer joined members."
+        log "No rooms found with ${min_joined_members} or fewer joined members"
         return 0
     fi
 
@@ -424,8 +464,10 @@ function process_rooms {
     echo "- Total rooms processed: ${room_count}"
     if [[ "${dry_run}" == false ]]; then
         echo "- Rooms deleted: ${deleted_count}"
+        log "Processing complete - Total: ${room_count}, Deleted: ${deleted_count}"
     else
         echo "- This was a dry run. No rooms were actually deleted."
+        log "Dry run complete - Total rooms that would be processed: ${room_count}"
     fi
 }
 
@@ -443,6 +485,8 @@ function main {
     local manual_mode="${MANUAL_MODE}"
     local force_regenerate="${FORCE_REGENERATE}"
     local min_joined_members="${DEFAULT_MIN_JOINED_MEMBERS}"
+
+    log "Script started"
 
     # Parse command line arguments
     while [[ $# -gt 0 ]]; do
@@ -462,11 +506,13 @@ function main {
             -t|--threshold)
                 if [[ -z "$2" || "$2" =~ ^- ]]; then
                     echo "ERROR: --threshold requires a numeric argument" >&2
+                    log "ERROR: --threshold requires a numeric argument"
                     usage
                     exit 1
                 fi
                 if [[ ! "$2" =~ ^[0-9]+$ ]]; then
                     echo "ERROR: --threshold must be a non-negative integer" >&2
+                    log "ERROR: --threshold must be a non-negative integer"
                     usage
                     exit 1
                 fi
@@ -479,6 +525,7 @@ function main {
                 ;;
             *)
                 echo "ERROR: Unknown option: $1" >&2
+                log "ERROR: Unknown option: $1"
                 usage
                 exit 1
                 ;;
@@ -506,6 +553,8 @@ function main {
     
     # Process rooms with the parsed arguments
     process_rooms "${dry_run}" "${manual_mode}" "${min_joined_members}"
+    
+    log "Script completed"
 }
 
 # ------------------------- Script Execution -------------------------
