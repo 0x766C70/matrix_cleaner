@@ -26,7 +26,7 @@ readonly SCRIPT_NAME="$(basename "$0")"
 readonly LOG_FILE="/var/log/${SCRIPT_NAME}.log"
 
 readonly INPUT_FILE="empty.list"          # Input file containing room data
-readonly DEFAULT_MIN_JOINED_MEMBERS=1    # Default threshold for considering a room empty
+readonly DEFAULT_MIN_JOINED_MEMBERS=0    # Default threshold for considering a room empty
 readonly SYNADM_CMD="synadm"              # Command to interact with Synapse admin
 readonly AUTO_CONFIRM="y"                 # Automatic confirmation response
 readonly MANUAL_MODE=false               # Default manual mode (changed by args)
@@ -346,7 +346,7 @@ function process_room_deletion_auto {
         log "Deleting room: ${clean_room_id} (Name: ${room_name}, Joined: ${joined_members})"
 
         # Use printf to send the confirmation (more reliable than echo for some shells)
-        if printf '%s\n' "${AUTO_CONFIRM}" | "${SYNADM_CMD}" room delete "${clean_room_id}" >/dev/null 2>&1; then
+        if printf '%s\n' "${AUTO_CONFIRM}" | "${SYNADM_CMD}" room delete --force-purge "${clean_room_id}" >/dev/null 2>&1; then
             echo "Successfully deleted room: ${clean_room_id}"
             log "Successfully deleted room: ${clean_room_id}"
         else
